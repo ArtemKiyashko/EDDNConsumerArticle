@@ -71,8 +71,8 @@ By pooling data in a common format, tools and analyses can be produced that add 
 
 Что же тут происходит, в двух словах:
 
-#### 1. Queue Distributor
-Бэкграунд сервис который вешается на EDDN Channel сокет и ловит все сообщения появляющиеся в нем. В зависимости от типа сообщения (определяется по schemeRef проперти, но об этом, возможно, дальше) - перенаправляет его в хранилище определенной очереди. Типов сообщений в EDDN всего 5:
+#### 1. Message Distributor
+Бэкграунд сервис который вешается на EDDN Channel сокет и ловит все сообщения появляющиеся в нем. В зависимости от типа сообщения (определяется по schemeRef проперти, но об этом дальше) - перенаправляет его в хранилище определенной очереди. Типов сообщений в EDDN всего 5:
 - https://eddn.edcd.io/schemas/journal/1
 - https://eddn.edcd.io/schemas/blackmarket/1
 - https://eddn.edcd.io/schemas/commodity/3
@@ -204,7 +204,7 @@ _serializer.Error += _serializer_Error;
 ```
 и жить препеваюче, перехватывая ошибки и логируя их в тот же `Application Insights`, настроив там Notification Alerts и прочие праздники ажуры. Но дело в том, что тогда мне тут нужно десериализовывать все сообщение, а не только `Header`. И вот с этим я пока борюсь. Я не могу поместить это на уровень ажурной фунции, т.к. там с управлением сериализацие есть некоторые проблемы, а по умолчанию сериализатор игнорирует missing property. Нет, тут нет ничего сложного, просто это моя недоделка.
 
-Ладно, прочитали header сообщения передали его в фактори, получили очередь и записали туда сообщение. Взглянем на фактори, последняя значимаю часть этого проекта (этот класс я приведу полностью):
+Ладно, прочитали header сообщения передали его в фактори, получили очередь и записали туда сообщение. Взглянем на фактори, последняя значимая часть этого проекта (этот класс я приведу полностью):
 ```csharp
 public class MessageQueueFactory : IMessageQueueFactory
 {
@@ -255,11 +255,11 @@ public class MessageQueueFactory : IMessageQueueFactory
   }
 ```
 
-Как видно это обычный `Dictionary<string, string>` с ключем в качесте `schemaRef`. По нему достаем имя нужной нам очереди.
+Как видно это обычный `Dictionary<string, string>` с ключем в качестве `schemaRef`. По нему достаем имя нужной нам очереди.
 
-Далее есть еще 1 словарь `_queues` - его я сделал для хранения `QueueClient`, чтобы не создавать постоянно клиенты очередей. Не памяти экономии ради, а времени для. Посчитав, что клиенты можно спокойно переиспользовать. Потому что неизвестно какой там round trip происходит при его инициализации, вдруг он стучиться в редмонд прямо из конструктора. Да, причина возможно надумана, но не вижу повода ее игнорировать. Может я не прав, тогда поправьте.
+Далее есть еще 1 словарь `_queues` - его я сделал для хранения `QueueClient`, чтобы не создавать постоянно клиенты очередей. Не памяти экономии ради, а времени для. Посчитав, что клиенты можно спокойно переиспользовать. Потому что неизвестно какой там round trip происходит при его инициализации, вдруг он стучится в редмонд прямо из конструктора. Да, причина возможно надумана, но не вижу повода ее игнорировать. Может я не прав, тогда поправьте.
 
-Нучто же, если очередь ранее создана - возвращаем ее, если не создана - создаем и возвращаем. Все просто. А сверху стоит `MessageDistributor`, который уже отправит в нее сообщение.
+Ну что же, если очередь ранее создана - возвращаем ее, если не создана - создаем и возвращаем. Все просто. А сверху стоит `MessageDistributor`, который уже отправит в нее сообщение.
 
 Вот и все в этом проекте. 3 класса и ретранслятор готов. Идем дальше.
 ### EDDNModels
@@ -283,10 +283,124 @@ public override string Id
 
 Проперти `Id`, которое мы обязаны иметь, чтобы сохранить объект в CosmosDB. По аналогии с любой СУБД и ORM. Помните я упоминал, что в сообщения `journal` могут быть разные модели и сохраняются они в разные коллекции? Ну вот, для этого этот свитч и существует. В зависимости от `Event` выбираем какое проперти использовать в качестве `Id`. Где-то имя системы, где-то имя космического тела, а где-то имя космической станции.
 
+Информация передаваемая об объектах может быть самая разная. Для небесных тел это: гравитация, наклон оси, период обращения, радиус, масса, класс светимости, возраст, расстояние до звезды, наличие и состав колец, годится\не годится для посадки и т.п. (полный список можно посмотреть в классе `JournalMessage`). Для станций передается их тип, список услуг, главенствующая фракция и т.д. В общем это POCO - и они понятны даже ежу.
+
 Идем дальше.
 
 ### JournalContributor
-Квинтэссенция масштабируемости всего решения - Azure Function App.
+Наш "разгребатель" очереди `journal` - Azure Function App. Сам Function App это классическая dotnet core class library и может содерждать в себе несколько, собственно, функций. Метод функции помечается аттрибутом `FunctionName` через который может даже немного настраиваться. В этом проекте я использовал подход: одна задача - один Function App (с одной функцией). Все из-за единицы масштабируемости - приложение. Мне не было смысла пихать все мессадж процессоры в одно приложение, так как рантайм будет масштабировать все приложение целиком. А хотелось побольше гибкости. К тому же, функции настолько дешевые, что это вполне нам по карману (об этом в финансовой части).
+
+Итак, у нас есть функция:
+```csharp
+public class JournalContributor
+    {
+        private readonly IEventTypeProcessorFactory _eventTypeProcessorFactory;
+
+        public JournalContributor(IEventTypeProcessorFactory eventTypeProcessorFactory)
+        {
+            _eventTypeProcessorFactory = eventTypeProcessorFactory;
+        }
+
+        [FunctionName("ContributeJournal")]
+        public async Task Run(
+            [QueueTrigger("journal", Connection = "AzureWebJobsStorage")]
+            Entity<JournalMessage> myQueueItem,
+            ILogger log)
+        {
+            try
+            {
+                var eventProcessor = _eventTypeProcessorFactory.GetProcessor(myQueueItem.Message);
+                await eventProcessor.ProcessEventAsync(myQueueItem.Message);
+            }
+            catch(Exception ex)
+            {
+                log.LogError(ex, $"Error processing queue item: {JsonConvert.SerializeObject(myQueueItem)}");
+                throw;
+            }
+        }
+    }
+```
+
+С входящим биндингом `QueueTrigger` в который рантайм передает нам сообщения из очереди (если они есть). Далее, по типу `Event` мы получаем конкретный обработчик для этого сообщения и... обрабатываем его.
+
+Здесь, на самом деле, хочу остановиться только на конструкторе. Все дело во внедрении зависимости - оно не совсем такое, каким мы его привыкли видеть в большинсвет dotnet приложений. Есть привычный нам класс `Startup` и даже метод `Configure`, но стартап должен наследовать класс `FunctionStartup` и должна быть указана сборка (`assembly`):
+```csharp
+using JournalContributor.Settings;
+using Microsoft.Extensions.Configuration;
+using System.IO;
+
+[assembly: FunctionsStartup(typeof(JournalContributor.Startup))]
+
+namespace JournalContributor
+{
+    public class Startup : FunctionsStartup
+    {
+        private IConfigurationRoot _functionConfig;
+        private readonly string COSMOS_CONNECTION_STRING = Environment.GetEnvironmentVariable("CosmosDBConnectionString");
+        private readonly string ENVIRONMENT = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
+
+        public override void Configure(IFunctionsHostBuilder builder)
+        {
+            _functionConfig = new ConfigurationBuilder()
+                .AddJsonFile(Path.Combine(builder.GetContext().ApplicationRootPath, "appsettings.json"), optional: true, reloadOnChange: true)
+                .AddJsonFile(Path.Combine(builder.GetContext().ApplicationRootPath, $"appsettings.{ENVIRONMENT}.json"), optional: true, reloadOnChange: true)
+                .Build();
+
+            builder.Services.AddSingleton<CosmosClient>(factory => new CosmosClient(COSMOS_CONNECTION_STRING));
+            builder.Services.AddSingleton<IEventTypeProcessorFactory, EventTypeProcessorFactory>();
+            builder.Services.AddTransient<FsdJumpProcessor>();
+            builder.Services.AddTransient<ScanProcessor>();
+            builder.Services.AddTransient<DockedProcessor>();
+            builder.Services.AddTransient<LocationProcessor>();
+            builder.Services.AddTransient<SaaSignalsFoundProcessor>();
+            builder.Services.Configure<CosmosDbSettings>(_functionConfig.GetSection("CosmosDbSettings"));
+        }
+    }
+}
+```
+Ну а дальше DI настраивается вполне привычно и думаю пояснений не требует.
+
+Вернемся к функции. ТТам, разумеется есть фактори, которая есть просто `switch` с порождением нужного процессора:
+```csharp
+public IEventTypeProcessor GetProcessor(JournalMessage journalMessage) => journalMessage.Event switch
+        {
+            JournalEvent.FsdJump => _serviceProvider.GetService<FsdJumpProcessor>(),
+            JournalEvent.Scan => _serviceProvider.GetService<ScanProcessor>(),
+            JournalEvent.Docked => _serviceProvider.GetService<DockedProcessor>(),
+            JournalEvent.Location => _serviceProvider.GetService<LocationProcessor>(),
+            JournalEvent.SaaSignalsFound => _serviceProvider.GetService<SaaSignalsFoundProcessor>(),
+            JournalEvent.CarrierJump => _serviceProvider.GetService<DockedProcessor>(),
+            _ => throw new ArgumentException($"Unknown Event {journalMessage.Event}", nameof(journalMessage.Event))
+        };
+```
+Все процессоры перебирать не будем, кому интересно, загляните в репу. Быстренько поясню только `ScanProcessor`, т.к. он единственный содержит больше 2-х строк:
+```csharp
+public async Task ProcessEventAsync(JournalMessage message)
+        {
+            var existingItem = await message.CheckIfItemExists(_bodiesContainer, _options.BodiesCollection.PartitionKey);
+            if (existingItem == null)
+                await _bodiesContainer.UpsertItemAsync(message);
+            else
+            {
+                //Basic scan type contains less information then others.
+                //We`re skipping item upsert if remote item has scan type higher then Basic
+                //We`re also skippings if remote item scan type is Detailed (as it`s a maximum info scan)
+                //Will update item if both (remote and current) have scan type Basic
+                //And will upsert item in case of current item have higher scan type then remote
+                if ((message.ScanType == ScanType.Basic && existingItem.ScanType != ScanType.Basic) ||
+                    existingItem.ScanType == ScanType.Detailed)
+                    return;
+                else
+                    await _bodiesContainer.UpsertItemAsync(message);
+            }
+        }
+```
+Я не являюсь большим фанатом комментариев в коде, так как чаще всего это не отражает квалификацию программиста, а наоборот, означает, что этот код настолько плох, что требует пояснений. Ну вот и тут решил эти пояснения оставить. Я вскользь упоминал про эту проблему с разной детализацией сканов выше и вот мой ответ на нее. Он не идеален, но пока другого у меня нет. Буквально, тут происходит следущее: мы проверяем, есть ли в контейнере `Bodies` сущность с таким же `Id` который нам приехал из очереди. Если нет, то сохраняем свою.
+>Тут мне пришлось использовать именно UpSert, а не Insert, т.к. с инсертом я получал concurrency и вылезали ошибки: Item with such Id laready exists (или как-то так). Думаю тот подход, упомянутый выше, с `Optimistic Concurrency` как раз бы решил эту проблему. Так что закинем эту мысль в беклог и вернемся потом. Пока upsert.
+
+Если такая сущность в контейнере есть, то разбираемся что там по `ScanType`. `Detailed` - самый подробный тип и нам нет смысла его обновлять. `Basic` - самый малоинформативный - и его можно обновить всегда. Если в контейнере `Basic` - просто апсертим новое сообщение и не паримся. В этом вся логика.
+
+Вот и вся функция. Тоже, фактически 3 класса, никакой магии и `MessageProcessor` для `journal` готов.
 ## Результат
 ## Финансовая часть
 ## Выводы
