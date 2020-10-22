@@ -84,7 +84,7 @@ By pooling data in a common format, tools and analyses can be produced that add 
 Что же тут происходит, в двух словах:
 
 #### 1. Message Distributor
-Бэкграунд сервис который вешается на EDDN Channel сокет и ловит все сообщения появляющиеся в нем. В зависимости от типа сообщения (определяется по schemeRef проперти, но об этом дальше) - перенаправляет его в хранилище определенной очереди. Типов сообщений в EDDN всего 5:
+Бэкграунд сервис который вешается на EDDN Channel сокет и ловит все сообщения появляющиеся в нем. В зависимости от типа сообщения (определяется по `schemaRef` проперти, но об этом дальше) - перенаправляет его в хранилище определенной очереди. Типов сообщений в EDDN всего 5:
 - https://eddn.edcd.io/schemas/journal/1
 - https://eddn.edcd.io/schemas/blackmarket/1
 - https://eddn.edcd.io/schemas/commodity/3
